@@ -1,0 +1,625 @@
+---
+title: "Using machine learning to predict building damage in the event of an earthquake"
+author: "Anil Gautam"
+date: "08/03/2022"
+output: bookdown::pdf_document2
+pandoc_args: --top-level-division=chapter
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+##########################################################
+   #Install/Load libraries 
+##########################################################
+
+# Note: this process could take a couple of minutes
+
+if(!require(tidyverse)) install.packages("tidyverse", repos = "http://cran.us.r-project.org")
+if(!require(caret)) install.packages("caret", repos = "http://cran.us.r-project.org")
+if(!require(data.table)) install.packages("data.table", repos = "http://cran.us.r-project.org")
+if(!require(rpart)) install.packages("rpart", repos = "http://cran.us.r-project.org")
+if(!require(rpart.plot)) install.packages("rpart.plot", repos = "http://cran.us.r-project.org")
+if(!require(randomForest)) install.packages("randomForest", repos = "http://cran.us.r-project.org")
+if(!require(lightgbm)) install.packages("lightgbm", repos = "http://cran.us.r-project.org")
+if(!require(R6)) install.packages("R6", repos = "http://cran.us.r-project.org")
+if(!require(tictoc)) install.packages("tictoc", repos = "http://cran.us.r-project.org")
+if(!require(smotefamily)) install.packages("smotefamily", repos = "http://cran.us.r-project.org")
+if(!require(xgboost))install.packages("xgboost", repos = "http://cran.us.r-project.org")
+if(!require(mlbench))install.packages("mlbench", repos = "http://cran.us.r-project.org")
+if(!require(bookdown))install.packages("bookdown", repos = "http://cran.us.r-project.org")
+if(!require(corrplot))install.packages("corrplot", repos = "http://cran.us.r-project.org")
+
+
+library(tidyverse)
+library(caret)
+library(data.table)
+library(rpart)
+library(rpart.plot)
+library(randomForest)
+library(lightgbm)
+library(tictoc)
+library(smotefamily)
+library(xgboost)
+library(mlbench)
+library(corrplot)
+```
+
+## Introduction  
+
+This project is part of an intermediate-level practice competition run by drivendata (Source https://www.drivendata.org/competitions/57/nepal-earthquake/). I picked this project because I wanted to be motivated at a personal level as well, I grew up in Kathmandu-Nepal. I was looking for anything related to Nepal and or Kathmandu on publicly available platforms. And I came across this project on drivendata competition page.
+
+In April 2015, a large earthquake hit Nepal that killed thousands of people and cause widespread damage. Millions of people were made homeless including my friends and relatives. It is estimated Nepal incurred economic loss of 10 billion USD. It took years for the recovery effort, during this rebuild and recovery process, the Nepalese government with the help of private organisation Kathmandu Living Labs and the Central Bureau of Statistics, has generated one of the largest datasets ever collected. The dataset contains information on the extent of building damage, household conditions, building structure, geographical location information, land use, and other socio-economic-demographic statistics. 
+
+It can be useful to recognize structures and areas that are more susceptible to earthquake vibrations, this can be important for both building earthquake resistant structures and also in prioritizing post-disaster response such as focusing on retrofitting buildings that are most dangerous. This project explores the use machine learning algorithms to in damage prediction with the hope, I will be used to complement other in-ground tools such as rapid visual assessment.   
+
+## Study Objective 
+This project aims to build predictive model for classifying ordinal variable damage_grade, which represents the extent of damage to a building, the dataset classifies damage into 3 categories: 
+
+1 represents low damage
+2 represents a medium amount of damage
+3 represents almost complete destruction
+
+
+## Literature review/ Previous work / Originality 
+
+There is not a lot of work done on this dataset. Google scholar and Github website were searched for related works, only one or two projects were found related to this dataset using R. My work builds on these previous works however no previous work has been directly copied.  
+
+A number of R packages have been used in this project and they are cited at the end. Some of the methods used for data wrangling, visualization and machine learning comes from the coursework (Irizarry, R. A. (2019). This online coursebook is freely available and I would like to acknowledge the author for his goodwill. All other work that were used in this project has been cited at the end.        
+
+
+## Dataset and Features 
+Three data sets were provided by drivendata org for the challenge, (Source: https://www.drivendata.org/competitions/57/nepal-earthquake/), these data sets were uploaded to github for subsequent easier access. Of the three data sets only train and labels data were used in this project. Test data provided by the organisation was solely for competition submission. Two data sets train (building_id and their features) and label (building_id and damage_grade) were combined into one dataset for this project.
+
+There are 39 columns in this dataset, where the building_id column is a unique and random identifier. The remaining 38 features are related to: geographical location (at three different levels), structural information such as age, area and height, number of floors, foundation type, roof type, structural material (mud, brick, timber, cement mortar), it's ownership and usage such as number of families, building usage (school, hotel, rental etcetra). The categorical variables were random lowercase ASCII characters, and appear to have no relation to what they were.  The feature details are given below: 
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+df_equake<-read.csv("https://raw.githubusercontent.com/AnilG80/CYO_HarvardX/main/train_values.csv")
+label <-read.csv("https://raw.githubusercontent.com/AnilG80/CYO_HarvardX/main/train_labels.csv")
+dfqk<-inner_join(df_equake,label,by="building_id")
+dfqk <- dfqk %>% mutate_if(is.character,as.factor)
+dfqk<-dfqk%>%mutate(damage_grade=as.factor(damage_grade))
+str(dfqk)
+
+```
+
+The data set was evaluated to see how many unique values were present in  each feature. Figure (\@ref(fig:unique-feature)) shows most variables were appear either binary, categorical or discreet numerical.
+```{r unique-feature, echo=FALSE, fig.align='center',fig.cap="How many distinct observation per feature"}
+dfqk_clean<-dfqk
+colnames(dfqk_clean)<-gsub("has_superstructure_","",colnames(dfqk_clean))
+colnames(dfqk_clean)<-gsub("has_secondary_use_","",colnames(dfqk_clean))
+l<-dfqk_clean%>% lapply(unique)%>%lengths()
+df<-tibble(features=colnames(dfqk_clean),entries=l)
+df[-c(1,39,40),]%>%ggplot(aes(x=reorder(features,entries),y=entries))+
+  geom_bar(stat="identity")+
+  theme(axis.text.x = element_text(angle = 90))+
+  scale_y_log10()+
+  xlab("Features")+
+  ylab("Distinct Observations")+
+  coord_flip()
+```
+ 
+```{r,echo=FALSE}
+#Here we split the data into variable types for future use
+cat_col<-dfqk[,c(9:15,27)]
+num_col<-dfqk[,c(2:5,6:8,28)]
+binary_str<-dfqk[,c(16:26)]
+binary_landuse<-dfqk[,c(29:39)]
+```
+/new page 
+
+## Data Exploration 
+Simple check showed (sum(is.na(dfqk)==TRUE)) there were no missing values in the data set. 
+
+### Predict Variable (Damage Grade)
+The distribution of damage_grade, Figure  (\@ref(fig:damage-grade)) shows the prevalence of medium level damage and rarity of low damage.This kind of class imbalance can affect how well the algorithms perform for rare classes. There are a number of ways of addressing class imbalance by using under or over sampling. However none were used in this exercise. Attempt was made to address this within the model, this will be discussed as part of the model.  
+
+```{r damage-grade, echo=FALSE, fig.align='center',fig.cap="Class imbalance"}
+dfqk %>%group_by(damage_grade)%>%summarise(N=n())%>%
+  mutate(perc=N/sum(N), lab=scales::percent(perc))%>%
+  ggplot(aes(x = "", y = perc, fill = damage_grade)) +
+  geom_col() +
+  geom_text(aes(label = lab),
+            position = position_stack(vjust = 0.5)) +
+  coord_polar(theta = "y")+
+  guides(fill = guide_legend(title = "Damage Grade")) +
+  theme_void()
+```
+
+### Categorical Variables 
+Figure (\@ref(fig:categorical-class)) shows an unequal proportion of damage_grade for most of these categories. Some categories appear to have a lot more influence on the type of damage, for example there is a lot less number of heavily damaged building for foundation_type of "i", ground floor type "v" and roof type "x".  
+
+```{r categorical-class, echo=FALSE, fig.align='center',fig.cap="Categorical variable and their effect"}
+dfqk %>% 
+  pivot_longer(cols = c(9:15,27)) %>% 
+  ggplot(aes(x=fct_infreq(value),fill=damage_grade)) + 
+  geom_bar(stat = "count", position = "fill")+ 
+  facet_wrap(~name, scales = "free",nrow = 2,ncol = 4)+
+  xlab("")+
+  ylab("Proportion")+
+  theme(legend.position = "top")
+```
+
+### Building Material 
+Figure (\@ref(fig:structure)) shows how building material could be an important variable as well in predicting building damage. In these figures, 1 represents the presence and 0 represents their absence. For example, building with reinforced concrete material showed lot less class 3 damage.
+
+```{r structure, echo=FALSE, fig.align='center',fig.cap="Building material and their effect"}
+dfqk_clean<-dfqk
+colnames(dfqk_clean)<-gsub("has_superstructure_","",colnames(dfqk_clean))
+dfqk_clean %>% 
+  pivot_longer(cols = c(16:26))%>% 
+  ggplot(aes(value, fill=damage_grade)) + 
+  geom_bar(stat="count",position="fill") + 
+  facet_wrap(~name, scales = "free",nrow = 3,ncol = 4)+
+  xlab("")+
+  ylab("Proportion")+
+  theme(legend.position = "none")
+```
+
+### Building Usage 
+
+Figure (\@ref(fig:usage)) shows secondary usage has some effect on building damage, generally a protecting one particularly for buildings that were also used as government office, institutes and rental. 
+
+```{r usage, echo=FALSE, fig.align='center',fig.cap="Building secondary usage and their effect"}
+colnames(dfqk_clean)<-gsub("has_secondary_use_","",colnames(dfqk_clean))
+dfqk_clean %>% 
+  pivot_longer(cols = c(29:38)) %>% 
+  ggplot(aes(value, fill=damage_grade)) + 
+  geom_bar(stat="count",position="fill") + 
+  facet_wrap(~name, scales = "free",nrow = 3,ncol = 4)+
+  xlab("")+
+  ylab("Proportion")+
+  theme(legend.position = "none")
+```
+
+### Location and dimension  (Numerical) 
+Features like age, geographical location, area and height were presented as numerical variable. These numerical variables were first checked for interdependence. The correlation plot (\@ref(fig:correlation)) showed strong correlation between number of floors and height, this could be important if we wanted to remove one of the variables for subsequent machine learning algorithm.   
+
+```{r correlation, echo=FALSE, fig.align='center',fig.cap="Corelation plot"}
+dfqk [,c(2:8)]%>% 
+  cor()%>%
+  corrplot::corrplot(type = "upper", order = "hclust", 
+                     tl.col = "black", tl.srt = 45)
+```
+
+Figure (\@ref(fig:Location)) show all numerical variables show a trend with regard to damage grade. For example, with age there is a reduction in damage grade 1 suggesting as building ages it's more likely to suffer heavier damage. Unlike age, height seems to have protecting effect at either ends (very short or very tall buildings) but has negative effect in the middle. Location at level 1 and 2 seem to be more discriminating compared to level 3.
+ 
+```{r Location, echo=FALSE, warning=FALSE,message=FALSE,fig.align='center',fig.cap="Location and dimension: Numerical Variables"}
+dfqk %>% filter(age<700)%>%
+  pivot_longer(cols = c(2:4,6:8)) %>% 
+  ggplot(aes(value,fill=damage_grade)) + 
+  geom_histogram(position = "fill")+ 
+  facet_wrap(~name, scales = "free",nrow = 2,ncol = 4)+
+  xlab("Entry")+
+  ylab("Proportion")+
+  theme(legend.position = "top")
+```
+
+In addition, there is a number of buildings (>1000) with age more than 900 years. I suspect this is erroneous data, although there are few old buildings and palaces they can't all be of the same age. Also it would have been very difficult to accurately date buildings in Nepal to that level of precision due to the lack of historical records before 1000 BC. In reality these data should be removed, however I see similar aged buildings are also present in the test data set and therefore for competition sake, these will be included. 
+
+## Machine Learning Methods
+
+Based on the variety of data, lack of normally distributed variables and a mix of categories, binaries and numerical variables, decision tree based algorithms were conisdered appropriate for this project. This is supported by previous works on this by Harirchian et al. (2022), Zhang et al. (2018) and Liang, Y. (2021). 
+
+### Data Preparation 
+
+```{r, echo=FALSE, warning=FALSE,message=FALSE}
+
+#Getting the data ready
+
+##one-hot encoding to change categorical variables into 1's and 0's
+dummy <- dummyVars(" ~ .", data=cat_col)
+cat_df <- data.frame(predict(dummy, newdata=cat_col))
+dfqkm<-data.frame(dfqk[,-c(9:15,27)],cat_df)
+
+## Validation set will be 10% of earthquake data 
+set.seed(1, sample.kind="Rounding") # if using R 3.5 or earlier, use `set.seed(1)`
+test_index <- createDataPartition(y = dfqkm$damage_grade, times = 1, p = 0.1, list = FALSE)
+trainqk<- dfqkm[-test_index,]
+testqk <- dfqkm[test_index,]
+
+#covert data into x (predictors) and y (to be predicted aka damage_grade)
+trainqk_x <- trainqk[,-which(colnames(trainqk) =="building_id")]
+trainqk_y<-trainqk[,which(colnames(trainqk) =="damage_grade")]
+testqk_x<-testqk[,-which(colnames(trainqk) =="building_id")]
+testqk_y<-testqk[,which(colnames(trainqk) =="damage_grade")]
+
+```
+
+### Model 1: Decision tree using rpart package 
+The rpart is a decision tree algorithm, it finds solutions by making sequential, hierarchical decision about the outcomes variable based on the predictor data. The maths works by splitting the dataset recursively until a predetermined termination criterion is reached. This splitting is based on the the degree of heterogeneity of the leaf nodes (split points). For example, a leaf node that contains a single class is homogeneous (also called impurity=0) and need not split. Entropy and Gini are the most common quantification method for measuring the heterogeneity. Rpart uses Gini as a default which is what we have done. Method "class"is chosen here as this relate to our predicted variable which is discrete (damage_grade). 
+
+```{r cpplot, echo=FALSE, warning=FALSE,message=FALSE,fig.align='center',fig.cap="Cp Plot: tuning complexity factor"}
+dt_fit <- rpart(damage_grade ~ ., data=trainqk_x, method="class",cp=-1)
+plotcp(dt_fit)
+```
+
+Based on the complexity factor(cp) plot report see Figure (\@ref(fig:cpplot)) , we choose cp pf 0.00005 for final model to be run.The results show around 72% overall accuracy, however it also shows poor performance for less prevalent class particularly in predicting damage grade 1. We will try to look at other models and see whether this improves with other models. 
+
+```{r, echo=FALSE, warning=FALSE,message=FALSE}
+tic()
+dt_fit <- rpart(damage_grade ~ ., data=trainqk_x, method="class",cp=0.00005)
+exectime_tree <- toc()
+exectime_tree <- exectime_tree$toc - exectime_tree$tic
+
+#Predict the test data set 
+dt_pred <- predict(dt_fit, testqk_x, type = "class")
+
+#How good is the prediction (Using Confusion Matrix)
+rpart_acc<-confusionMatrix(dt_pred, reference=testqk_y,mode = "everything")
+
+#Table outlining the performance of difference models 
+options(pillar.sigfig = 5)
+ptable<-cbind(t(tibble("Decision Tree using rpart" =rpart_acc[["byClass"]][,"F1"])),Accuracy=rpart_acc$overall[1],Timetaken=exectime_tree)
+ptable<-data.frame(ptable)
+colnames(ptable)[1:3]<-c("F1_Class_1","F1_Class_2","F1_Class_3")
+knitr::kable(ptable)
+
+```
+The results from rpat decision tree algorithm shows overall accuracy of approximately 72% however it performs poorly for less prevalent class i.e. damage grade 1. Information from fitted model was also used to get the list of variables that were dominant in terms of prediction power.This is shown in figure (\@ref(fig:rpartImp). 
+
+```{r rpartImp, echo=FALSE, warning=FALSE,message=FALSE,fig.align='center',fig.cap="Importance Variables for decision tree model"}
+
+imp<-data.frame(dt_fit$variable.importance)
+colnames(imp)<-c("impRank")
+qkvar <- rownames(imp)
+rownames(imp) <- NULL
+imp <- cbind(qkvar,imp)
+imp%>%filter(impRank>1000)%>%
+  ggplot(aes(x=reorder(qkvar,impRank),y=impRank,fill=qkvar))+
+  geom_bar(stat="identity")+
+  coord_flip()+
+  theme(legend.position = "none")+
+  ylab("Variable Importance")+
+  xlab("Top Features")
+
+```
+
+### Model 2: Random Forest 
+The random forest is an ensemble decision tree algorithm. It uses bagging (randomly samples with replacement) and chooses random features(n features) when building each individual tree, this way it tries create an uncorrelated forest of trees. Each tree then has a say in the final voting, the prediction is done by majority vote. Here, we choose 50 trees and only sample 50000 rows to save time. Mtry represents subset of features that is chosen for each decision tree, this is a tuning parameter but often found in the literature as square root of number of features. In our case, that is 8. However, after tuning we found mtry of >16 is optimal, similarly number of trees greater than 20 didn't make a lot of difference. The tuning took a long time and therefore, the codes have not been included here. 
+
+![Tuning mtry for random forest] (https://github.com/AnilG80/CYO_HarvardX/blob/main/mtrytuning.png?raw=true)
+
+```{r, echo=FALSE, warning=FALSE,message=FALSE}
+set.seed(1, sample.kind="Rounding") # if using R 3.5 or earlier, use `set.seed(1)`
+tic()
+rf_fit <- randomForest(damage_grade ~ ., data=trainqk_x,
+                       ntree=50,
+                       sampsize=50000,
+                       mtry=25,
+                       importance = TRUE)
+exectime_rf <- toc()
+exectime_rf <- exectime_rf$toc - exectime_rf$tic
+plot(rf_fit)
+
+#predict test data using the fit 
+rf_pred<-predict(rf_fit,testqk_x)
+
+#check the performance of the model 
+rf_acc<-confusionMatrix(rf_pred, reference=testqk_y, mode = "everything")
+
+#update table outlining the performance of difference models 
+options(pillar.sigfig = 5)
+ptable1<-cbind(t(tibble("Random Forest using randomForest" =rf_acc[["byClass"]][,"F1"])),Accuracy=rf_acc$overall[1],Timetaken=exectime_rf)
+ptable1<-data.frame(ptable1)
+colnames(ptable1)[1:3]<-c("F1_Class_1","F1_Class_2","F1_Class_3")
+ptable1
+ptable2<-rbind(ptable,ptable1)
+knitr::kable(ptable2)
+
+```
+
+The results from random forest algorithm shows overall accuracy of approximately 73% which is better than rpart algorithm. However, this also performed poorly classifying damage grade 1. variable improtance for this model was comparable to previous model, see figure (\@ref(fig:rforestImp).
+ 
+```{r rforestImp, echo=FALSE, warning=FALSE,message=FALSE,fig.align='center',fig.cap="Importance Variables for random forest model"}
+imp_rf<-data.frame(importance(rf_fit))
+rname_rf <- rownames(imp_rf)
+rownames(imp_rf) <- NULL
+imp_rf <- cbind(rname_rf,imp_rf)
+imp_rf%>%filter(X1>10)%>%
+  pivot_longer(!rname_rf)%>%
+  ggplot(aes(x=reorder(rname_rf,value),y=value,fill=name))+
+  geom_bar(stat="identity")+
+  coord_flip()+
+  theme(legend.position = "none")+
+  ylab("Variable Importance")+
+  xlab("Top Features")
+
+```
+
+### Model 3: Random Forest using only Important variables 
+Important variables as shown in figure (\@ref(fig:rforestImp)) were used for second random forest model. This was done to see whether this would result in less time-consuming but equally performing model. 
+```{r, echo=FALSE, warning=FALSE,message=FALSE}
+imp_var<-imp_rf%>%filter(X1>10)%>%arrange(desc(MeanDecreaseAccuracy))
+imp_var_names<-imp_var$rname_rf
+imp_var_names<-append(imp_var_names,"damage_grade")
+
+#subset train and test data, y's are the same 
+train_ImpVar<-trainqk_x[,imp_var_names]
+test_ImpVar<-testqk_x[,imp_var_names]
+
+#run model with mtry 8 from tuning 
+
+set.seed(1, sample.kind="Rounding") # if using R 3.5 or earlier, use `set.seed(1)`
+tic()
+rf_fit1 <- randomForest(damage_grade ~ ., data=train_ImpVar,
+                       ntree=50,
+                       sampsize=70000,
+                       mtry=8,
+                       importance = TRUE)
+exectime_rf1 <- toc()
+exectime_rf1 <- exectime_rf1$toc - exectime_rf1$tic
+
+# get  model info and use it for prediction 
+rf_pred1<-predict(rf_fit1,testqk_x)
+rf_acc1<-confusionMatrix(rf_pred1, reference=testqk_y, mode = "everything")
+
+#update table of model performances 
+options(pillar.sigfig = 5)
+ptable3<-cbind(t(tibble("Random Forest  with select feature" =rf_acc1[["byClass"]][,"F1"])),Accuracy=rf_acc1$overall[1],Timetaken=exectime_rf1)
+ptable3<-data.frame(ptable3)
+colnames(ptable3)[1:3]<-c("F1_Class_1","F1_Class_2","F1_Class_3")
+ptable4<-rbind(ptable2,ptable3)
+knitr::kable(ptable4)
+```
+
+As expected, the results show similar accuracy but almost four times reduction in execution time. 
+
+### Model 4: Gradient boost using lightgbm 
+Gradient boosting is also based on decision tree type algorithm, the gradient comes from how the derivative of loss function against the predicted value (Gradient Descent Method) is used to minimizes the loss function, y = ax+b+e. Boosting refers to how the algorithm tries to boost the weak learners into stronger ones. Boosting builds the first learner on the training dataset to predict the samples, then it calculates the loss (difference between observed and the predicted0, this loss or weakness is used to build an improved learner in the second stage. In each iteration, the new residual is used for the subsequent iteration. Lightgbm algorithm makes gradient boosting lot more efficient by using intelligent sampling, feature bundling and identifying splitting points using histogram-based algorithm.
+
+The parameters used for the algorithm are detailed below: 
+
+  learning_rate = 0.1 :  multiplication performed on each boosting iteration.
+  num_iterations = 1000 : how many total iterations if not early stopped 
+  objective = "multiclass" : classification model for three damage grades
+  metric = "multi_error" : metric of choice for evaluation on the test set 
+  num_class = 3 : how many levels to classify 
+  early_stopping_rounds = 50 : number of maximum iterations without improvements.
+  min_sum_hessian_in_leaf = 0.1 : prune by minimum hessian requirement (performed better than minimum in a leaf)
+  num_threads = 4 : computing 
+  max_depth = -1 : maximum depth of each trained tree, -1 is unlimited 
+  boosting = "gbdt" : boosting method gradient boosting decision tree 
+  max_bin = 16320 : number of maximum unique values per feature.
+  num_leaves = 127 :  maximum leaves for each trained tree
+
+```{r, echo=FALSE, warning=FALSE,message=FALSE}
+# convert damage_grade to factors starting from number 0 to 2
+train_label <- as.numeric(as.factor(trainqk_x$damage_grade)) - 1
+test_label <- as.numeric(as.factor(testqk_x$damage_grade)) - 1
+
+#get the data as matrix for lgb dataset 
+train_gb <- as.matrix(trainqk_x[,-31])
+test_gb <- as.matrix(testqk_x[,-31])
+#get the data as sparse matrix 
+dtrainqk <- lgb.Dataset(data = train_gb, label = train_label)
+dtestqk <- lgb.Dataset(data = test_gb, label = test_label)
+#validation data set 
+valids <- list(test = dtestqk)
+
+#parameters for the model 
+set.seed(1, sample.kind="Rounding") # if using R 3.5 or earlier, use `set.seed(1)`
+tic()
+params <- list(
+  learning_rate = 0.1 # multiplication performed on each boosting iteration.
+  , num_iterations = 1000 # how many total iterations if not early stopped 
+  , objective = "multiclass" # classification more than 2 
+  , metric = "multi_error" # metric of choice for evaluation on the test set 
+  , num_class = 3 # How many levels to classify 
+  , early_stopping_rounds = 50 # Number of maximum iterations without improvements.
+  , min_sum_hessian_in_leaf = 0.1 # Prune by minimum hessian requirement  
+  , num_threads = 4 # computing 
+  , max_depth = -1 # Maximum depth of each trained tree, -1 is unlimited 
+  , boosting = "gbdt" # boosting method gradient boosting decision tree 
+  , max_bin = 16320 #Number of maximum unique values per feature.
+  , num_leaves = 127 # Maximum leaves for each trained tree
+)
+
+# running the model 
+
+fit_gb <- lgb.train(
+  params
+  , data=dtrainqk
+  , valids=valids
+  , verbose = 0
+)
+
+exectime_gb <- toc()
+exectime_gb <- exectime_gb$toc - exectime_gb$tic
+
+gb_raw <- data.frame(predict(fit_gb, test_gb, reshape = TRUE))
+gb_index<-apply(gb_raw,1,function(x) colnames(gb_raw)[which.max(x)])
+gb_pred<-if_else(gb_index=="X1",1, ifelse(gb_index=="X2",2,3))
+gb_acc<-confusionMatrix(as.factor(gb_pred),as.factor(as.numeric(test_label)+1),mode = "everything")
+
+#update table of model performances 
+options(pillar.sigfig = 5)
+ptable5<-cbind(t(tibble("Gradient Boost using lightgbm" =gb_acc[["byClass"]][,"F1"])),Accuracy=gb_acc$overall[1],Timetaken=exectime_gb)
+ptable5<-data.frame(ptable5)
+colnames(ptable5)[1:3]<-c("F1_Class_1","F1_Class_2","F1_Class_3")
+ptable6<-rbind(ptable4,ptable5)
+knitr::kable(ptable6)
+```
+The results show almost 74.5% overall accuracy with improved performance for class 1 prediction as well. This model also took the least amount of time. 
+
+### Model 5: Extreme gradient boost using xboost 
+The main difference between lightgbm and xboost is how they grow decision trees.  Xgboost applies level-wise tree growth based on branch level loss whereas lightgbm applies leaf-wise tree growth based on global loss. Level-wise approach grows horizontal whereas leaf-wise grows vertical trees with more depth ( risk of over fitting).
+
+```{r, echo=FALSE, warning=FALSE,message=FALSE}
+
+xgb_train<-xgb.DMatrix(data=train_gb,label=train_label)
+xgb_test<-xgb.DMatrix(data=test_gb,label=test_label)
+
+num_class<- length(unique(train_label))
+
+tic()
+set.seed(1, sample.kind="Rounding") # if using R 3.5 or earlier, use `set.seed(1)`
+
+xgb_fit<-xgboost(
+  data=xgb_train,
+  eta=0.1,
+  max_depth=15,
+  nrounds=50,
+  eval_metric="merror",
+  objective="multi:softprob",
+  num_class = 3,
+  nthread = 4,
+  verbose = 0
+)
+
+exectime_xgb <- toc()
+exectime_xgb <- exectime_xgb$toc - exectime_xgb$tic
+
+# Review the final model and results
+xgb_raw<-data.frame(predict(xgb_fit,xgb_test,reshape = TRUE))
+xgb_index<-apply(xgb_raw,1,function(x) colnames(xgb_raw)[which.max(x)])
+xgb_pred<-if_else(xgb_index=="X1",1, ifelse(xgb_index=="X2",2,3))
+xgb_acc<-confusionMatrix(as.factor(xgb_pred),as.factor(as.numeric(test_label)+1),mode = "everything")
+
+#update table of model performances 
+options(pillar.sigfig = 5)
+ptable7<-cbind(t(tibble("Gradient Boost using xgboost" =xgb_acc[["byClass"]][,"F1"])),Accuracy=xgb_acc$overall[1],Timetaken=exectime_xgb)
+ptable7<-data.frame(ptable7)
+colnames(ptable7)[1:3]<-c("F1_Class_1","F1_Class_2","F1_Class_3")
+ptable8<-rbind(ptable6,ptable7)
+knitr::kable(ptable8)
+
+```
+Surprisingly, xgboost didn't perform better than lightgbm. Although we could only tune eta, other parameters could only be tuned manually. This was less than ideal due to time it took for running these models.Further investigation is warranted regarding tuning these models.  
+
+### Model 6: Lightgbm with sample weights 
+As we saw most of the previous model performed poorly for less prevalent class (damage grade 1), sample weighing was introduced to address this issue. Weight index was generated using a simple
+
+```{r, echo=FALSE, warning=FALSE,message=FALSE}
+
+#getting data in a suitable format 
+weights_gb <-ifelse(trainqk_x$damage_grade==1,1,if_else(trainqk_x$damage_grade==2,0.6,0.8))
+#get the data as matrix for lgb dataset 
+dtrainqk_w <- lgb.Dataset(data = train_gb, label = train_label,weight =weights_gb )
+dtestqk_w <- lgb.Dataset(data = test_gb, label = test_label)
+#validation data set 
+valids_w <- list(test = dtestqk_w)
+
+set.seed(1, sample.kind="Rounding") # if using R 3.5 or earlier, use `set.seed(1)`
+tic()
+#parameters for the model 
+params_gbw <- list(
+  learning_rate = 0.1 # multiplication performed on each boosting iteration.
+  , num_iterations = 1000 # how many total iterations if not early stopped 
+  , objective = "multiclass" # classification more than 2 
+  , metric = "multi_error" # metric of choice for evaluation on the test set 
+  , num_class = 3 # How many levels to classify 
+  , early_stopping_rounds = 50 # Number of maximum iterations without improvements.
+  , min_sum_hessian_in_leaf = 0.1 # Prune by minimum hessian requirement  
+  , num_threads = 4 # computing 
+  , max_depth = -1 # Maximum depth of each trained tree, -1 is unlimited 
+  , boosting = "gbdt" # boosting method gradient boosting decision tree 
+  , max_bin = 16320 #Number of maximum unique values per feature.
+  , num_leaves = 127 # Maximum leaves for each trained tree
+)
+
+
+#fit the model 
+fit_gbw <- lgb.train(
+  params_gbw
+  , data=dtrainqk_w
+  , valids = valids_w
+  , verbose = 0
+)
+
+exectime_gbw <- toc()
+exectime_gbw <- exectime_gbw$toc - exectime_gbw$tic
+gbw_raw <- data.frame(predict(fit_gbw, test_gb, reshape = TRUE))
+gbw_index<-apply(gbw_raw,1,function(x) colnames(gbw_raw)[which.max(x)])
+gbw_pred<-if_else(gbw_index=="X1",1, ifelse(gbw_index=="X2",2,3))
+gbw_acc<-confusionMatrix(as.factor(gbw_pred),as.factor(as.numeric(test_label)+1),mode = "everything")
+
+#update table of model performances 
+#update table of model performances 
+options(pillar.sigfig = 5)
+ptable9<-cbind(t(tibble("Lightgbm with sample weights" =gbw_acc[["byClass"]][,"F1"])),Accuracy=gbw_acc$overall[1],Timetaken=exectime_gbw)
+ptable9<-data.frame(ptable9)
+colnames(ptable9)[1:3]<-c("F1_Class_1","F1_Class_2","F1_Class_3")
+ptable10<-rbind(ptable8,ptable9)
+knitr::kable(ptable10)
+```
+The results show by performing sample weighing, there is an increase in accuracy in picking up less prevalent class.
+
+### Model 7: xgboost with sample weights
+```{r, echo=FALSE, warning=FALSE,message=FALSE}
+
+xgb_train<-xgb.DMatrix(data=train_gb,label=train_label,weight =weights_gb)
+xgb_test<-xgb.DMatrix(data=test_gb,label=test_label)
+
+num_class<- length(unique(train_label))
+
+tic()
+xgb_fit1<-xgboost(
+  data=xgb_train,
+  eta=0.2,
+  max_depth=15,
+  nrounds=50,
+  eval_metric="merror",
+  objective="multi:softprob",
+  num_class = 3,
+  nthread = 4
+)
+
+exectime_xgb1 <- toc()
+exectime_xgb1 <- exectime_xgb1$toc - exectime_xgb1$tic
+
+# Review the final model and results
+xgb_fit1
+xgb_raw1<-data.frame(predict(xgb_fit1,xgb_test,reshape = TRUE))
+xgb_index1<-apply(xgb_raw1,1,function(x) colnames(xgb_raw1)[which.max(x)])
+xgb_pred1<-if_else(xgb_index1=="X1",1, ifelse(xgb_index1=="X2",2,3))
+xgb_acc1<-confusionMatrix(as.factor(xgb_pred1),as.factor(as.numeric(test_label)+1),mode = "everything")
+xgb_acc1
+
+#update table of model performances 
+options(pillar.sigfig = 5)
+ptable11<-cbind(t(tibble("xgboost with sample weights" =xgb_acc1[["byClass"]][,"F1"])),Accuracy=xgb_acc1$overall[1],Timetaken=exectime_xgb1)
+ptable11<-data.frame(ptable11)
+colnames(ptable11)[1:3]<-c("F1_Class_1","F1_Class_2","F1_Class_3")
+ptable12<-rbind(ptable10,ptable11)
+knitr::kable(ptable12)
+
+```
+## Conclusion and Future Work 
+
+In this work, we showed how different machine learning algorithms could be used for predicting the level of damage based on various information related to the age, location, ownership and structure of the building.
+
+Of the four algorithms that were used in this project, lightgbm performed better both in terms of accuracy and computational efficiency. Both gradient boosting algorithms improved class 1 accuracy even without having to use sample weights, this is consistent with their algorithm that is meant to boost weak learners.
+
+The leader board for this competition shows accuracy of 75% for top 10, although we got close to this we still have someway to go. Some of the areas for further exploration include: better algorithm for tuning parameters, using oversampling to address class imbalance and using ensemble.    
+
+
+
+## Environment 
+```{r, echo=FALSE}
+df<-data.frame(R_version=R.Version()$version.string,SysArchitecture=R.Version()$arch,System = R.Version()$system)
+knitr::kable(df,"pipe")
+```
+
+
+## References
+
+Technical details for Decision Tree (rpart) (Therneau et al. 1999 based on Friedman et al.1984) in R can be found at:
+https://CRAN.R-project.org/package=rpart
+
+Technical details for ensemble decision tree (randomforest) (Breiman (2001)) in R can be found at:
+https://CRAN.R-project.org/package=randomForest
+
+Technical details for xgboost (Chen et al. 2017) in R can be found at:
+https://CRAN.R-project.org/package=xgboost 
+
+Technical details for lightgbm ( Ke, Guolin et al. (2017)) can be found at: 
+https://CRAN.R-project.org/package=lightgbm 
+
+
+RStudio IDE environment details is included in the appendix. R Core Team (2020). R: A language and environment for statistical computing. R Foundation for Statistical Computing, Vienna, Austria. URL https://www.R-project.org/.
+
+Harirchian, E., Kumari, V., Jadhav, K., Raj Das, R., Rasulzade, S., & Lahmer, T. (2020). A machine learning framework for assessing seismic hazard safety of reinforced concrete buildings. Applied Sciences, 10(20), 7153.
+
+Zhang, Y., Burton, H. V., Sun, H., & Shokrabadi, M. (2018). A machine learning framework for assessing post-earthquake structural safety. Structural safety, 72, 1-16.
+
+Liang, Y. (2021). Application of Machine Learning Methods to Predict the Level of Buildings Damage in the Nepal Earthquake.
